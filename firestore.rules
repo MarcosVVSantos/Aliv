@@ -1,0 +1,105 @@
+// Regras de segurança do Firestore para o projeto Aliv.
+//
+// ⚠️ NÃO TESTADAS contra um Firestore real (nem emulador) — este arquivo foi
+// escrito por revisão de código, cruzando cada regra com o que
+// src/services/*.js realmente lê e grava (ver CONTEXTO.md, "Levantamento do
+// CRUD"). Antes de publicar: teste no Firestore Rules Playground (Console) ou
+// com o emulador (`firebase emulators:start --only firestore`), e rode
+// `npm run testar-firestore -- --confirmar` autenticado como profissional.
+//
+// Decisões que o pedido do ajuste não especificou (marcadas onde aparecem):
+//   - Leitura de `usuarios`: liberada para qualquer autenticado, não só o
+//     dono. Sem isso, boa parte do app quebra — nomes de paciente/profissional
+//     são lidos entre usuários o tempo todo (agenda, seleção de paciente nos
+//     formulários, listarProfissionais no agendamento). Só a ESCRITA em
+//     `usuarios` é restrita ao dono ou à equipe.
+//   - "Escrita do profissional" em `prescricoes`: implementado ao pé da letra
+//     — só `tipo == 'profissional'`, não `atendente`. Isso significa que a
+//     tela /prescricoes (gestão) só funciona logada como profissional. Se a
+//     atendente também precisa gerenciar prescrições, avise para eu ajustar.
+//   - `usuarios`, `produtos` e `consultas` (fora do que o paciente já pode):
+//     escrita liberada para `profissional` OU `atendente`, porque as 5 telas
+//     de gestão (/usuarios, /consultas, /prescricoes, /produtos, /registros)
+//     são usadas pela equipe da clínica, sem distinção de cargo no código do
+//     app — não há como saber pelo pedido qual das duas o ajuste queria aqui.
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function autenticado() {
+      return request.auth != null;
+    }
+
+    // Lê o PRÓPRIO documento em `usuarios` para descobrir o tipo de quem faz
+    // o pedido. `get()` em um documento inexistente nega a regra que o chama
+    // (não derruba as outras regras) — é o caso, por exemplo, do instante
+    // entre criar a conta no Authentication e gravar `usuarios/{uid}` no
+    // cadastro (ver authService.cadastrarPaciente, `uidEmCadastro`).
+    function meuTipo() {
+      return get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.tipo;
+    }
+
+    function souEuMesmo(uid) {
+      return autenticado() && request.auth.uid == uid;
+    }
+
+    function souEquipe() {
+      return autenticado() && meuTipo() in ['profissional', 'atendente'];
+    }
+
+    function souProfissional() {
+      return autenticado() && meuTipo() == 'profissional';
+    }
+
+    // --- usuarios ---------------------------------------------------------
+    // Leitura: qualquer autenticado (ver nota no topo do arquivo).
+    // Escrita: o próprio usuário, ou a equipe (telas de gestão).
+    match /usuarios/{uid} {
+      allow read: if autenticado();
+      allow write: if souEuMesmo(uid) || souEquipe();
+    }
+
+    // --- produtos -----------------------------------------------------------
+    // Catálogo: leitura para qualquer autenticado, escrita só pela equipe.
+    match /produtos/{produtoId} {
+      allow read: if autenticado();
+      allow write: if souEquipe();
+    }
+
+    // --- consultas ------------------------------------------------------------
+    // O paciente lê e escreve as PRÓPRIAS consultas (agendar, reagendar); a
+    // equipe lê e escreve todas (agenda, gestão).
+    match /consultas/{consultaId} {
+      allow read: if souEquipe() || (autenticado() && resource.data.paciente_id == request.auth.uid);
+      allow create: if souEquipe() || (autenticado() && request.resource.data.paciente_id == request.auth.uid);
+      allow update, delete: if souEquipe() || (autenticado() && resource.data.paciente_id == request.auth.uid);
+    }
+
+    // --- prescricoes ---------------------------------------------------------
+    // O paciente só LÊ as próprias prescrições — nunca escreve (é a receita
+    // médica). Escrita só pela profissional (ver nota no topo do arquivo).
+    match /prescricoes/{prescricaoId} {
+      allow read: if souProfissional() || (autenticado() && resource.data.paciente_id == request.auth.uid);
+      allow write: if souProfissional();
+    }
+
+    // --- registros_diarios e doses --------------------------------------------
+    // O paciente lê e escreve só os PRÓPRIOS registros/doses; a equipe lê e
+    // escreve todos (telas de gestão, ficha do paciente na área clínica).
+    match /registros_diarios/{registroId} {
+      allow read: if souEquipe() || (autenticado() && resource.data.paciente_id == request.auth.uid);
+      allow create: if souEquipe() || (autenticado() && request.resource.data.paciente_id == request.auth.uid);
+      allow update, delete: if souEquipe() || (autenticado() && resource.data.paciente_id == request.auth.uid);
+    }
+
+    match /doses/{doseId} {
+      allow read: if souEquipe() || (autenticado() && resource.data.paciente_id == request.auth.uid);
+      allow create: if souEquipe() || (autenticado() && request.resource.data.paciente_id == request.auth.uid);
+      allow update, delete: if souEquipe() || (autenticado() && resource.data.paciente_id == request.auth.uid);
+    }
+
+    // Qualquer outra coleção: negada por padrão (nenhum `match` casa com ela).
+  }
+}
