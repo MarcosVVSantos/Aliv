@@ -163,5 +163,4 @@ npx eas-cli build --platform android --profile preview
 ```
 
 O perfil `preview` do `eas.json` gera o APK. Confirme `USAR_MOCK = true` antes.
-#   A l i v  
- 
+#
